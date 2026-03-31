@@ -1,0 +1,190 @@
+# .github/workflows/classroom.yml
+# Playwright Basics — 6 задач + flake8
+
+name: 🎯 Playwright Basics - Autograder
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  PYTHON_VERSION: '3.12'
+  MAX_SCORE: 110  # ← Явно задаём max_score
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1: Структура (10 баллов)
+  # ─────────────────────────────────────────────────────────────
+  check-structure:
+    name: "📁 Структура (10 баллов)"
+    runs-on: ubuntu-22.04
+    outputs:
+      score: ${{ steps.check.outputs.score }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Проверка
+        id: check
+        run: |
+          mkdir -p tools/output
+          if [ -f "tests/task_01_*.py" ] && [ -f "tests/task_06_*.py" ]; then
+            echo "score=10" >> $GITHUB_OUTPUT
+            echo "10" > tools/output/structure_score.txt
+          else
+            echo "score=0" >> $GITHUB_OUTPUT
+            echo "0" > tools/output/structure_score.txt
+          fi
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2: Линтинг flake8 (15 баллов) ← НОВЫЙ!
+  # ─────────────────────────────────────────────────────────────
+  lint-code:
+    name: "🧹 Линтинг (15 баллов)"
+    runs-on: ubuntu-22.04
+    needs: check-structure
+    continue-on-error: true
+    outputs:
+      score: ${{ steps.lint.outputs.score }}
+      error_count: ${{ steps.lint.outputs.error_count }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install flake8
+        run: pip install flake8
+      - name: Запуск flake8
+        id: lint
+        run: |
+          mkdir -p tools/output
+          python -m flake8 tests/ --config=tools/flake8_config.cfg \
+            --output-file=tools/output/flake8_report.txt \
+            --show-source --statistics 2>&1 || true
+          
+          error_count=$(grep -c ":" tools/output/flake8_report.txt 2>/dev/null || echo "0")
+          score=$((15 - error_count))
+          [ $score -lt 0 ] && score=0
+          
+          echo "score=$score" >> $GITHUB_OUTPUT
+          echo "error_count=$error_count" >> $GITHUB_OUTPUT
+          echo "$score" > tools/output/lint_score.txt
+          echo "$error_count" > tools/output/lint_error_count.txt
+      - name: Вывод ошибок в Summary
+        run: |
+          echo "## 🧹 Линтинг (flake8)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          error_count="${{ steps.lint.outputs.error_count }}"
+          score="${{ steps.lint.outputs.score }}"
+          
+          if [ "$error_count" -eq 0 ]; then
+            echo "✅ **Ошибок не найдено!** Код соответствует стандартам." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Найдено ошибок:** \`${error_count}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            if [ -f "tools/output/flake8_report.txt" ]; then
+              echo "### Примеры ошибок (первые 15):" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              head -15 tools/output/flake8_report.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Не удалось прочитать отчёт" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "💡 **Совет:** Исправляй ошибки по порядку." >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Баллы:** \`${score} / 15\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3: Тесты задач (матрица 6 задач)
+  # ─────────────────────────────────────────────────────────────
+  test-tasks:
+    name: "🧪 Тесты задач"
+    runs-on: ubuntu-22.04
+    needs: [check-structure, lint-code]
+    strategy:
+      matrix:
+        task: [
+          {file: task_01_navigate, points: 10},
+          {file: task_02_click_text, points: 10},
+          {file: task_03_click_role, points: 15},
+          {file: task_04_fill_input, points: 20},
+          {file: task_05_visibility, points: 15},
+          {file: task_06_get_text, points: 30}
+        ]
+    continue-on-error: true
+    outputs:
+      total_score: ${{ steps.total.outputs.score }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+      - name: Run test
+        id: run
+        run: |
+          mkdir -p tools/output
+          pytest tests/${{ matrix.task.file }}.py -v --tb=short --timeout=30 \
+            2>&1 | tee tools/output/${{ matrix.task.file }}_output.txt || true
+          
+          if grep -q "1 passed" tools/output/${{ matrix.task.file }}_output.txt; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "${{ matrix.task.points }}" > tools/output/${{ matrix.task.file }}_score.txt
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "0" > tools/output/${{ matrix.task.file }}_score.txt
+          fi
+      - name: Calculate total
+        id: total
+        run: |
+          total=0
+          for f in tools/output/task_*_score.txt; do
+            if [ -f "$f" ]; then
+              score=$(cat "$f")
+              total=$((total + score))
+            fi
+          done
+          echo "score=$total" >> $GITHUB_OUTPUT
+          echo "$total" > tools/output/total_score.txt
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4: Итоговый отчёт
+  # ─────────────────────────────────────────────────────────────
+  final-summary:
+    name: "📊 Итоговый отчёт"
+    runs-on: ubuntu-22.04
+    needs: [check-structure, lint-code, test-tasks]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Генерация Summary
+        env:
+          MAX_SCORE: ${{ env.MAX_SCORE }}
+        run: |
+          python tools/generate_summary.py >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+      - name: Upload артефактов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts-${{ github.run_number }}
+          path: |
+            tools/output/
+          retention-days: 7
